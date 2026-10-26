@@ -22,8 +22,10 @@ _normal(::Piece, ctx::SlotContext, slots) = slots.N
 _depends(ex, syms) = any(s -> any(isequal(unwrap(s)), Symbolics.get_variables(ex)), syms)
 _iszero(ex) = isequal(Symbolics.simplify(Num(ex)), 0)
 
-_where(loc::BoxFace) = string(loc)
+# How messages name a location or key, the same however `BoxFace` is imported.
+_where(loc::BoxFace) = "BoxFace($(loc.iv), :$(loc.side))"
 _where(loc::Piece) = string(loc.piece)
+_where(piece::BoundaryPiece) = string(piece)
 
 # Is the call `ex` of field `f` a trace on `loc`? A call of a field that does not have the
 # coordinates `loc` fixes, such as `w(t)` or `q(t, y)` on an x-face, is at its declared
@@ -397,11 +399,11 @@ function _check_conflicts(essential, natural, periodic, labels, owner)
     for (k, p) in enumerate(periodic), face in (p.master, p.mirror)
         for i in eachindex(ess)
             ess[i] == (face, p.field) &&
-                conflict(poffset + k, i, "conflict: field $(p.field) is periodic on $face")
+                conflict(poffset + k, i, "conflict: field $(p.field) is periodic on $(_where(face))")
         end
         for j in eachindex(nat)
             nat[j][1] == face && owner[nat[j][2]] == p.field &&
-                conflict(poffset + k, offset + j, "conflict: field $(p.field) is periodic on $face")
+                conflict(poffset + k, offset + j, "conflict: field $(p.field) is periodic on $(_where(face))")
         end
     end
     return nothing
