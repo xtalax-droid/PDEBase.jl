@@ -69,6 +69,7 @@ end
         :get_system_unknowns,
         :get_eqvar,
         :add_metadata!,
+        :make_pdesys_compatible,
     )
 
     for name in developer_api
@@ -80,4 +81,10 @@ end
     end
 
     @test !hasdocstring(PDEBase, :not_a_pdebase_name)
+
+    # A module's docstring lives in the module itself.
+    @test hasdocstring(PDEBase.StrongForm, :StrongForm)
+    if CAN_QUERY_PUBLIC
+        @test Base.ispublic(PDEBase, :StrongForm)
+    end
 end
