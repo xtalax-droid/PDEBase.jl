@@ -14,9 +14,9 @@ using Symbolics: Symbolics, Differential, Equation, Num, substitute, unwrap, wra
 using SymbolicUtils: SymbolicUtils, arguments, iscall, operation, symtype, unwrap_const
 using TermInterface: maketerm, metadata
 using ModelingToolkitBase: get_eqs
-using ..PDEBase: VariableMap, LowerBoundary, UpperBoundary, InterfaceBoundary, _flatten_eqs,
+using ..PDEBase: VariableMap, LowerBoundary, UpperBoundary, InterfaceBoundary, PieceBoundary, _flatten_eqs,
     chain_flatten_array_variables, depvars, indvars, isupper, replaced_vars, BoxFace, Piece,
-    Interior, BoundaryPiece, NormalDerivative, classify_call, classify_condition, location,
+    Interior, BoundaryPiece, NormalDerivative, classify_call, location,
     substitute_traces, assert_no_traces
 
 include("types.jl")

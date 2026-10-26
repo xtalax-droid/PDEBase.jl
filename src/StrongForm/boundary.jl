@@ -1,16 +1,15 @@
 # Stage d (spec §5.3): put each boundary condition into slots, then classify it as essential,
 # natural (matched against an equation's conormal flux) or periodic.
 
-# A boundary key is the classifier's `BoxFace` for a face of an analytic box and the
-# `BoundaryPiece` itself for any other piece; `_location` is the classifier's form of a key.
+# A boundary key is the classifier's `BoxFace` for an endpoint face and the `BoundaryPiece`
+# for a trace on a piece. `_location` is where the key lies by the classifier, so a piece that
+# is a face of the box is that `BoxFace`, with its numeric normal and endpoint.
 boundary_face(b::LowerBoundary) = BoxFace(b.x, :lo)
 boundary_face(b::UpperBoundary) = BoxFace(b.x, :hi)
+boundary_face(b::PieceBoundary) = b.piece
 
-_location(face::BoxFace) = face
-_location(piece::BoundaryPiece) = Piece(piece)
-_location(p::Piece) = p
-_key(face::BoxFace) = face
-_key(p::Piece) = p.piece
+_location(ctx::SlotContext, face::BoxFace) = face
+_location(ctx::SlotContext, piece::BoundaryPiece) = location(ctx.v, [Piece(piece)])
 
 "Outward unit normal of `face` in the coordinate order `sivs`: `-e_iv` on `:lo`, `+e_iv` on `:hi`."
 face_normal(face::BoxFace, sivs) = [isequal(x, face.iv) ? (face.side === :lo ? -1 : 1) : 0 for x in sivs]
@@ -155,7 +154,7 @@ slot_condition(eq::Equation, face, ctx::SlotContext, slots) =
     restrict_to_face(_slot_unrestricted(eq, face, ctx, slots), face, ctx, slots)
 
 function _slot_unrestricted(eq::Equation, face, ctx::SlotContext, slots)
-    loc = _location(face)
+    loc = _location(ctx, face)
     B = _slot_expression(ctx, unwrap(eq.lhs - eq.rhs), loc, slots, "$eq on $(_where(loc))")
     slotset = Set(unwrap.(vcat(slots.U, slots.G, slots.X, [slots.T], slots.N, slots.P)))
     leftover = unique(_leftovers!(Any[], B, slotset, false))
@@ -169,14 +168,16 @@ end
 
 `ex` with a box face's own coordinate slot `X[d]` set to the face's endpoint, so coefficients
 are compared on the face rather than in the volume. The identity on a `BoundaryPiece`, whose
-coordinates vary over the piece.
+coordinates vary over the piece, unless the piece is a face of the box.
 """
 function restrict_to_face(ex, face::BoxFace, ctx::SlotContext, slots)
     d = findfirst(x -> isequal(x, face.iv), ctx.sivs)
     lo, hi = ctx.intervals[face.iv]
     return substitute(ex, Dict(slots.X[d] => (face.side === :lo ? lo : hi)))
 end
-restrict_to_face(ex, ::Union{BoundaryPiece, Piece}, ctx::SlotContext, slots) = ex
+restrict_to_face(ex, ::Piece, ctx::SlotContext, slots) = ex
+restrict_to_face(ex, piece::BoundaryPiece, ctx::SlotContext, slots) =
+    restrict_to_face(ex, _location(ctx, piece), ctx, slots)
 
 # Proportionality at random slot values (open question O3). Sampling cannot certify identity, so
 # this never accepts a match; it only sharpens the rejection message. Values are signed and
@@ -313,41 +314,22 @@ end
 
 """
     periodic_condition(b::InterfaceBoundary, ctx::SlotContext) -> PeriodicBC{BoxFace}
-    periodic_condition(eq::Equation, ctx::SlotContext) -> PeriodicBC{BoxFace}
 
 A condition `u(.., x_lo, ..) ~ u(.., x_hi, ..)` equating one field on the two faces of one axis,
-as `parse_bcs` records it or as `PDEBase.classify_condition` finds it; the shift is the axis
-length. Periodic conditions between pieces that are not opposite faces of a box are not
-supported yet.
+as `parse_bcs` records it; the shift is the axis length.
 """
 function periodic_condition(b::InterfaceBoundary, ctx::SlotContext)
+    f = _field(ctx, unwrap(b.u))
+    (f === nothing || !isequal(operation(unwrap(b.u)), operation(unwrap(b.u2)))) &&
+        error("periodic condition $(b.eq) must equate the same field on two faces")
     isequal(b.x, b.x2) ||
         error("periodic pairing needs a translation; general maps are unsupported: $(b.eq)")
-    return _periodic(b.eq, unwrap(b.u), unwrap(b.u2), b.x, ctx)
-end
-
-function periodic_condition(eq::Equation, ctx::SlotContext)
-    class = classify_condition(ctx.v, eq)
-    class.kind === :periodic || error("$eq is not a periodic condition between two faces of the box")
-    calls = unique(_field_calls!(Any[], ctx, unwrap(eq.lhs - eq.rhs)))
-    length(calls) == 2 || error("periodic condition $eq must equate the same field on two faces")
-    return _periodic(eq, calls..., first(class.locations).iv, ctx)
-end
-
-_field_calls!(found, ctx::SlotContext, ex) = !iscall(ex) ? found :
-    _field(ctx, ex) !== nothing ? push!(found, ex) :
-    (foreach(a -> _field_calls!(found, ctx, unwrap(a)), arguments(ex)); found)
-
-function _periodic(eq, u, u2, iv, ctx::SlotContext)
-    f = _field(ctx, u)
-    (f === nothing || !isequal(operation(u), operation(u2))) &&
-        error("periodic condition $eq must equate the same field on two faces")
-    residual = Num(unwrap(eq.lhs - eq.rhs))
-    pair = Num(u) - Num(u2)
+    residual = Num(unwrap(b.eq.lhs - b.eq.rhs))
+    pair = Num(unwrap(b.u)) - Num(unwrap(b.u2))
     (_iszero(residual - pair) || _iszero(residual + pair)) ||
-        error("periodic condition $eq must have the form u(.., x_lo, ..) ~ u(.., x_hi, ..)")
-    lo, hi = ctx.intervals[iv]
-    return PeriodicBC(BoxFace(iv, :lo), BoxFace(iv, :hi), f, hi - lo)
+        error("periodic condition $(b.eq) must have the form u(.., x_lo, ..) ~ u(.., x_hi, ..)")
+    lo, hi = ctx.intervals[b.x]
+    return PeriodicBC(BoxFace(b.x, :lo), BoxFace(b.x, :hi), f, hi - lo)
 end
 
 # Routing on a face where some equation's conormal gradient coefficients vanish (e.g. the
@@ -426,20 +408,17 @@ function _check_conflicts(essential, natural, periodic, labels, owner)
 end
 
 """
-    boundary_conditions(boundarymap::AbstractDict, ctx::SlotContext, slots, flux; mass = nothing)
-    boundary_conditions(bcs::AbstractVector, ctx::SlotContext, slots, flux; mass = nothing)
+    boundary_conditions(boundarymap, ctx::SlotContext, slots, flux; mass = nothing)
         -> (essential, natural, periodic)
 
-Classify every spatial boundary condition, given as a `parse_bcs` boundary map of box faces or
-as a list of condition equations, which are located with `PDEBase.classify_condition` and may be
-written on box faces, as traces on box-face pieces, or as traces `u(t, Γ)` and normal
-derivatives `NormalDerivative(Γ)(u(t, Γ))` on the pieces `Γ` of a mesh boundary; initial
-conditions in the list are skipped. A condition is keyed by its `PDEBase.BoxFace` on a box face
-and by its `BoundaryPiece` otherwise. A gradient-free condition is essential for the field
-`parse_bcs` filed it under, or for the one field it contains; any other is routed to the
-equation whose conormal flux it matches, with the face's normal `±e_iv` on a box face and the
-symbolic normal slots `N` on a piece. `flux[e]` is equation `e`'s flux vector and `mass[e]` its
-time-derivative part, in slots.
+Classify every spatial boundary condition of a `parse_bcs` boundary map: the endpoint faces of
+a box discretization's map, keyed by their `PDEBase.BoxFace`, and the `PieceBoundary` entries
+of a mesh discretization's map, keyed by their `BoundaryPiece`; a mixed map gives a union key
+type. A gradient-free condition is essential for the field `parse_bcs` filed it under; any
+other is routed to the equation whose conormal flux it matches, with the normal `±e_iv` on a
+box face (or on a piece that is a face of the box) and the symbolic normal slots `N` on any
+other piece. `flux[e]` is equation `e`'s flux vector and `mass[e]` its time-derivative part,
+in slots.
 
 Errors if two conditions fix the same field, or give the same equation's natural condition, on
 one face. With `mass`, an equation's own field is the one whose time derivative alone it
@@ -449,8 +428,8 @@ Otherwise it is also an error to give a face both an essential condition on a fi
 natural condition for that field's equation, or to give either kind of condition on a face of a
 field's periodic pair.
 """
-function boundary_conditions(boundarymap::AbstractDict, ctx::SlotContext, slots, flux; mass = nothing)
-    located = Tuple{Equation, BoxFace, Union{Int, Nothing}}[]
+function boundary_conditions(boundarymap, ctx::SlotContext, slots, flux; mass = nothing)
+    located = Tuple{Equation, Any, Union{Int, Nothing}}[]
     periodic = PeriodicBC{BoxFace}[]
     perlabels = String[]
     for (op, bykey) in boundarymap, (x, bs) in bykey
@@ -458,52 +437,24 @@ function boundary_conditions(boundarymap::AbstractDict, ctx::SlotContext, slots,
         for b in bs
             if b isa InterfaceBoundary
                 isupper(b) && continue
-                _push_periodic!(periodic, perlabels, periodic_condition(b, ctx), b.eq)
+                p = periodic_condition(b, ctx)
+                any(q -> (q.master, q.mirror, q.field) == (p.master, p.mirror, p.field), periodic) &&
+                    continue
+                push!(periodic, p)
+                push!(perlabels, string(b.eq))
                 continue
             end
-            b isa Union{LowerBoundary, UpperBoundary} ||
+            b isa Union{LowerBoundary, UpperBoundary, PieceBoundary} ||
                 error("boundary condition $(b.eq) relates derivatives on two faces; only u(.., x_lo, ..) ~ u(.., x_hi, ..) periodic pairs are supported")
             push!(located, (b.eq, boundary_face(b), findfirst(o -> isequal(o, op), ctx.ops)))
         end
     end
-    return _boundary_conditions(located, periodic, perlabels, ctx, slots, flux, mass)
-end
-
-function boundary_conditions(bcs::AbstractVector, ctx::SlotContext, slots, flux; mass = nothing)
-    located = Tuple{Equation, Any, Union{Int, Nothing}}[]
-    periodic = PeriodicBC{BoxFace}[]
-    perlabels = String[]
-    for eq in bcs
-        class = classify_condition(ctx.v, eq)
-        if class.kind === :periodic
-            _push_periodic!(periodic, perlabels, periodic_condition(eq, ctx), eq)
-        elseif class.kind === :boundary
-            push!(located, (eq, _key(only(class.locations)), nothing))
-        end
-    end
-    return _boundary_conditions(located, periodic, perlabels, ctx, slots, flux, mass)
-end
-
-function _push_periodic!(periodic, perlabels, p, eq)
-    any(q -> (q.master, q.mirror, q.field) == (p.master, p.mirror, p.field), periodic) && return
-    push!(periodic, p)
-    push!(perlabels, string(eq))
-    return
-end
-
-# The key type of a set of conditions: the one key type, or the union of a mixed set.
-function _key_type(located, periodic)
-    types = unique(vcat(Any[typeof(key) for (_, key, _) in located], Any[BoxFace for _ in periodic]))
-    return isempty(types) ? BoxFace : Union{types...}
-end
-
-function _boundary_conditions(located, periodic, perlabels, ctx::SlotContext, slots, flux, mass)
     K = _key_type(located, periodic)
     essential = EssentialBC{K}[]
     natural = NaturalBC{K}[]
     esslabels, natlabels = String[], String[]
     for (eq, key, field) in located
-        loc = _location(key)
+        loc = _location(ctx, key)
         n = _normal(loc, ctx, slots)
         Bvolume = _slot_unrestricted(eq, key, ctx, slots)
         B = restrict_to_face(Bvolume, key, ctx, slots)
@@ -530,4 +481,10 @@ function _boundary_conditions(located, periodic, perlabels, ctx::SlotContext, sl
     foreach(b -> check_evaluable(b.g), essential)
     foreach(b -> check_evaluable(b.Φ), natural)
     return essential, natural, PeriodicBC{K}[PeriodicBC{K, typeof(p.shift)}(p.master, p.mirror, p.field, p.shift) for p in periodic]
+end
+
+# The key type of a set of conditions: the one key type, or the union of a mixed set.
+function _key_type(located, periodic)
+    types = unique(vcat(Any[typeof(key) for (_, key, _) in located], Any[BoxFace for _ in periodic]))
+    return isempty(types) ? BoxFace : Union{types...}
 end
