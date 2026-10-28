@@ -113,8 +113,8 @@ function build(problem)
         @variables ψ(..)
         Dt = Differential(t); Dxx = Differential(x)^2
         ϵ = 1.0e-2
-        V(x) = 0.0
-        eq = [(im * ϵ) * Dt(ψ(t, x)) ~ (-0.5 * ϵ^2)Dxx(ψ(t, x)) + V(x) * ψ(t, x)]
+        V2(x) = 0.0
+        eq = [(im * ϵ) * Dt(ψ(t, x)) ~ (-0.5 * ϵ^2)Dxx(ψ(t, x)) + V2(x) * ψ(t, x)]
         ψ0 = x -> exp((im / ϵ) * 1.0e-1 * sum(x))
         bcs = [
             ψ(0, x) => ψ0(x),
